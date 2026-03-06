@@ -212,9 +212,32 @@ normalize_files() {
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Options:
+  --source DIR   Use DIR instead of auto-detecting SD card from /Volumes
+  --dest DIR     Override destination (default: $DEST)
+  -h, --help     Show this help
+EOF
+    exit 0
+}
+
 main() {
     require ffmpeg
     require rsync
+
+    local source_override=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --source) source_override="$2"; shift 2 ;;
+            --dest)   DEST="$2";            shift 2 ;;
+            -h|--help) usage ;;
+            *) err "Unknown option: $1"; usage ;;
+        esac
+    done
 
     local raw_dir="${DEST}/raw"
     local proc_dir="${DEST}/processed"
@@ -222,14 +245,19 @@ main() {
 
     # ── 1. Copy ──────────────────────────────────────────────────────────────
     step "Step 1: Copy from SD card"
-    info "Looking for SD card..."
     local source
-    source="$(find_sd_card)"
+    if [[ -n "$source_override" ]]; then
+        source="$source_override"
+        info "Source (override): $source"
+    else
+        info "Looking for SD card..."
+        source="$(find_sd_card)"
 
-    # Tascam recorders store multitrack sessions under MTR/
-    if [[ -d "${source}/MTR" ]]; then
-        source="${source}/MTR"
-        info "Found Tascam MTR folder"
+        # Tascam recorders store multitrack sessions under MTR/
+        if [[ -d "${source}/MTR" ]]; then
+            source="${source}/MTR"
+            info "Found Tascam MTR folder"
+        fi
     fi
 
     info "Source:            $source"
