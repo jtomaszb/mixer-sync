@@ -34,25 +34,40 @@ require() {
 
 # ── find SD card ──────────────────────────────────────────────────────────────
 
+# Known Tascam volume name — checked first to avoid scanning /Volumes
+# (ls /Volumes/ can hang on unresponsive network mounts)
+TASCAM_VOLUME="Tascam"
+
 find_sd_card() {
+    # Fast path: known Tascam volume name
+    if [[ -d "/Volumes/${TASCAM_VOLUME}" ]]; then
+        info "Found /Volumes/${TASCAM_VOLUME}"
+        echo "/Volumes/${TASCAM_VOLUME}"
+        return
+    fi
+
+    # Fallback: use diskutil to list only external physical volumes
+    # (avoids hanging on unresponsive network mounts)
     local volumes=()
-    while IFS= read -r vol; do
-        [[ "$vol" =~ ^(Macintosh\ HD|Preboot|Recovery|VM|Update|Data)$ ]] && continue
-        volumes+=("$vol")
-    done < <(ls /Volumes/)
+    while IFS= read -r mountpoint; do
+        [[ -n "$mountpoint" ]] && volumes+=("$mountpoint")
+    done < <(diskutil list -plist external physical 2>/dev/null \
+             | xmllint --xpath '//array[preceding-sibling::key[1]="AllDisksAndPartitions"]/dict/string[preceding-sibling::key[1]="MountPoint"]' - 2>/dev/null \
+             | grep -oE '[^<>]+' | grep '^/Volumes/' || true)
 
     if [[ ${#volumes[@]} -eq 0 ]]; then
-        err "No external volumes found in /Volumes."
+        err "No external volumes found. Is the SD card plugged in?"
+        err "If the volume name changed from '${TASCAM_VOLUME}', update TASCAM_VOLUME in sync.sh."
         exit 1
     fi
 
     if [[ ${#volumes[@]} -eq 1 ]]; then
-        echo "/Volumes/${volumes[0]}"
+        echo "${volumes[0]}"
         return
     fi
 
     log ""
-    log "Multiple volumes found. Select the SD card:"
+    log "Multiple external volumes found. Select the SD card:"
     local i=1
     for vol in "${volumes[@]}"; do
         log "  $i) $vol"
@@ -65,7 +80,7 @@ find_sd_card() {
         err "Invalid selection."
         exit 1
     fi
-    echo "/Volumes/${volumes[$((choice - 1))]}"
+    echo "${volumes[$((choice - 1))]}"
 }
 
 # ── step 1: copy raw files, preserving folder structure ───────────────────────
