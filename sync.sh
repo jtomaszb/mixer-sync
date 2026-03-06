@@ -76,7 +76,7 @@ copy_from_sd() {
 
     # rsync: archive mode, skip files that already exist at destination
     # -a: preserve timestamps/permissions, -v: verbose, --ignore-existing: skip existing
-    rsync -av --ignore-existing \
+    rsync -av --ignore-existing --min-size=100k \
           --exclude="*.sys" --exclude="*.bin" --exclude=".*" \
           "${source}/" "${raw_dir}/"
 }
