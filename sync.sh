@@ -13,6 +13,7 @@
 set -euo pipefail
 
 DEST="${HOME}/Music/Mixer"
+SOURCE="/Volumes/Tascam/MTR"
 PEAK_TARGET="-1"   # dBFS
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -30,57 +31,6 @@ require() {
         err "Install with: brew install $1"
         exit 1
     fi
-}
-
-# ── find SD card ──────────────────────────────────────────────────────────────
-
-# Known Tascam volume name — checked first to avoid scanning /Volumes
-# (ls /Volumes/ can hang on unresponsive network mounts)
-TASCAM_VOLUME="Tascam"
-
-find_sd_card() {
-    # Fast path: known Tascam volume name
-    if [[ -d "/Volumes/${TASCAM_VOLUME}" ]]; then
-        info "Found /Volumes/${TASCAM_VOLUME}"
-        echo "/Volumes/${TASCAM_VOLUME}"
-        return
-    fi
-
-    # Fallback: use diskutil to list only external physical volumes
-    # (avoids hanging on unresponsive network mounts)
-    local volumes=()
-    while IFS= read -r mountpoint; do
-        [[ -n "$mountpoint" ]] && volumes+=("$mountpoint")
-    done < <(diskutil list -plist external physical 2>/dev/null \
-             | xmllint --xpath '//array[preceding-sibling::key[1]="AllDisksAndPartitions"]/dict/string[preceding-sibling::key[1]="MountPoint"]' - 2>/dev/null \
-             | grep -oE '[^<>]+' | grep '^/Volumes/' || true)
-
-    if [[ ${#volumes[@]} -eq 0 ]]; then
-        err "No external volumes found. Is the SD card plugged in?"
-        err "If the volume name changed from '${TASCAM_VOLUME}', update TASCAM_VOLUME in sync.sh."
-        exit 1
-    fi
-
-    if [[ ${#volumes[@]} -eq 1 ]]; then
-        echo "${volumes[0]}"
-        return
-    fi
-
-    log ""
-    log "Multiple external volumes found. Select the SD card:"
-    local i=1
-    for vol in "${volumes[@]}"; do
-        log "  $i) $vol"
-        ((i++))
-    done
-    log ""
-    printf "Enter number [1-%d]: " "${#volumes[@]}"
-    read -r choice
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#volumes[@]} )); then
-        err "Invalid selection."
-        exit 1
-    fi
-    echo "${volumes[$((choice - 1))]}"
 }
 
 # ── step 1: copy raw files, preserving folder structure ───────────────────────
@@ -260,19 +210,12 @@ main() {
 
     # ── 1. Copy ──────────────────────────────────────────────────────────────
     step "Step 1: Copy from SD card"
-    local source
-    if [[ -n "$source_override" ]]; then
-        source="$source_override"
-        info "Source (override): $source"
-    else
-        info "Looking for SD card..."
-        source="$(find_sd_card)"
+    local source="${source_override:-$SOURCE}"
 
-        # Tascam recorders store multitrack sessions under MTR/
-        if [[ -d "${source}/MTR" ]]; then
-            source="${source}/MTR"
-            info "Found Tascam MTR folder"
-        fi
+    if [[ ! -d "$source" ]]; then
+        err "Source not found: $source"
+        err "Is the SD card plugged in?"
+        exit 1
     fi
 
     info "Source:            $source"
