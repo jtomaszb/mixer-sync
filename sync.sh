@@ -136,8 +136,10 @@ normalize_files() {
         local tmpfile="${file}.tmp.wav"
 
         # Detect current peak volume
+        # Note: volumedetect logs at "info" level, so -loglevel error suppresses it.
+        # Use -loglevel info and grep for just the max_volume line.
         local max_vol
-        max_vol=$(ffmpeg -loglevel error -i "$file" -af "volumedetect" -f null /dev/null 2>&1 \
+        max_vol=$(ffmpeg -loglevel info -i "$file" -af "volumedetect" -f null /dev/null 2>&1 \
                   | grep "max_volume" | awk '{print $5}')
 
         if [[ -z "$max_vol" ]]; then
