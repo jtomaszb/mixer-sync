@@ -88,7 +88,20 @@ merge_stereo_pairs() {
         local rfile="${raw_session_dir}/${prefix}${right_num_str}${ext}"
 
         if [[ ! -f "$rfile" ]]; then
-            warn "No right-channel pair for: $filename (expected $(basename "$rfile"))"
+            warn "No stereo pair for: $filename — copying as mono"
+            local out_session_dir="${proc_dir}/${session_dir}"
+            mkdir -p "$out_session_dir"
+            local mono_out="${out_session_dir}/${filename}"
+            if [[ -e "$mono_out" ]]; then
+                warn "Skipping mono (exists): ${session_dir}/${filename}"
+                ((skipped++))
+            elif cp "$lfile" "$mono_out"; then
+                ok "Copied mono: ${session_dir}/${filename}"
+                ((merged++))
+            else
+                err "Copy failed: ${session_dir}/${filename}"
+                ((errors++))
+            fi
             continue
         fi
 
