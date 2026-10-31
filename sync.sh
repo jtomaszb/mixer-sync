@@ -10,7 +10,7 @@
 #   $DEST/raw/{session}/        raw copies from SD (untouched)
 #   $DEST/processed/{session}/  merged stereo + peak-normalized files
 
-set -euo pipefail
+set -Eeuo pipefail
 
 DEST="${HOME}/Music/Mixer"
 SOURCE="/Volumes/Tascam/MTR"
@@ -24,6 +24,9 @@ ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# Under set -e a failing command exits silently; say where it happened.
+trap 'err "Exited unexpectedly at line $LINENO (status $?): $BASH_COMMAND"' ERR
 
 require() {
     if ! command -v "$1" &>/dev/null; then
@@ -39,9 +42,21 @@ copy_from_sd() {
     local source="$1"
     local raw_dir="$2"
 
+    # Prefer Homebrew rsync 3.x: it starts copying immediately (incremental file
+    # list). The system rsync (2.6.9 / openrsync) stats the whole card up front.
+    local rsync_bin
+    for rsync_bin in /opt/homebrew/bin/rsync /usr/local/bin/rsync; do
+        [[ -x "$rsync_bin" ]] && break
+        rsync_bin=""
+    done
+    if [[ -z "$rsync_bin" ]]; then
+        rsync_bin="$(command -v rsync)"
+        warn "Using $rsync_bin — slow file listing; 'brew install rsync' for a faster scan"
+    fi
+
     # rsync: archive mode, skip files that already exist at destination
     # -a: preserve timestamps/permissions, -v: verbose, --ignore-existing: skip existing
-    rsync -av --ignore-existing --min-size=100k \
+    "$rsync_bin" -av --ignore-existing --min-size=100k \
           --exclude="*.sys" --exclude="*.bin" --exclude=".*" \
           "${source}/" "${raw_dir}/"
 }
@@ -118,7 +133,7 @@ merge_stereo_pairs() {
         fi
 
         info "Merging: $filename + $(basename "$rfile") → $out_name"
-        if ffmpeg -loglevel error \
+        if ffmpeg -nostdin -loglevel error \
                   -i "$lfile" -i "$rfile" \
                   -filter_complex "[0:a][1:a]join=inputs=2:channel_layout=stereo[out]" \
                   -map "[out]" \
@@ -152,8 +167,10 @@ normalize_files() {
         # Note: volumedetect logs at "info" level, so -loglevel error suppresses it.
         # Use -loglevel info and grep for just the max_volume line.
         local max_vol
-        max_vol=$(ffmpeg -loglevel info -i "$file" -af "volumedetect" -f null /dev/null 2>&1 \
-                  | grep "max_volume" | awk '{print $5}')
+        # -nostdin: don't let ffmpeg consume the file list piped into this loop.
+        # || true: a no-match grep must not trip set -e/pipefail; handled below.
+        max_vol=$(ffmpeg -nostdin -loglevel info -i "$file" -af "volumedetect" -f null /dev/null 2>&1 \
+                  | grep "max_volume" | awk '{print $5}' || true)
 
         if [[ -z "$max_vol" ]]; then
             warn "Could not detect peak for: $rel"
@@ -173,7 +190,7 @@ normalize_files() {
 
         info "Normalizing: $rel  (peak ${max_vol} dB → ${PEAK_TARGET} dBFS, gain ${gain} dB)"
 
-        if ffmpeg -loglevel error -i "$file" -af "volume=${gain}dB" "$tmpfile" \
+        if ffmpeg -nostdin -loglevel error -i "$file" -af "volume=${gain}dB" "$tmpfile" \
            && mv "$tmpfile" "$file"; then
             ok "Normalized: $rel"
             ((normalized++))

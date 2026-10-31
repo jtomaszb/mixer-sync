@@ -21,6 +21,16 @@ chmod +x sync.sh   # one-time setup
 
 Plug in your SD card, then run the script. If multiple volumes are detected it will ask you to pick one.
 
+## Menubar item
+
+Click-to-sync from the macOS menubar (🎚) instead of running the script:
+
+```bash
+./run-menubar.sh
+```
+
+The first run creates a local `.venv` and installs `rumps`. The menu has **Sync now**, live step status, shortcuts to the processed/raw folders, and the last log (`~/Library/Logs/mixer-sync.log`). It checks that the SD card is mounted before starting and posts a notification when the sync finishes.
+
 ## Output layout
 
 ```
