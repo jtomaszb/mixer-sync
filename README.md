@@ -31,14 +31,19 @@ Click-to-sync from the macOS menubar (🎚) instead of running the script:
 
 The first run creates a local `.venv` and installs `rumps`. The menu has **Sync now**, live step status, shortcuts to the processed/raw folders, and the last log (`~/Library/Logs/mixer-sync.log`). It checks that the SD card is mounted before starting and posts a notification when the sync finishes.
 
-### Start at login
+### Start at login / updating
+
+`menubar.sh` installs and controls the menubar item as a login item:
 
 ```bash
-./install-login-item.sh              # install / update
-./install-login-item.sh --uninstall  # remove
+./menubar.sh update      # first-time install, and after any change to sync.sh / menubar.py
+./menubar.sh status      # running? is the installed copy up to date?
+./menubar.sh start|stop|restart
+./menubar.sh logs        # follow the app log
+./menubar.sh uninstall   # remove the login item
 ```
 
-This installs a LaunchAgent that starts the menubar item at login. macOS blocks background login jobs from reading `~/Desktop`, so the installer copies the runtime files to `~/Library/Application Support/mixer-sync/` and runs from there. Re-run it after changing `sync.sh` or `menubar.py`. Logs: `~/Library/Logs/mixer-sync-menubar.log`.
+`update` installs a LaunchAgent that starts the item at every login, and restarts it with the latest code. macOS blocks background login jobs from reading `~/Desktop`, so the runtime files are copied to `~/Library/Application Support/mixer-sync/` and run from there; that installed copy is a snapshot, so run `./menubar.sh update` after editing. `stop` (or **Quit** in the menu) keeps it stopped until the next login or `start`. Logs: `~/Library/Logs/mixer-sync-menubar.log` (app) and `~/Library/Logs/mixer-sync.log` (last sync).
 
 ## Output layout
 
