@@ -31,6 +31,15 @@ Click-to-sync from the macOS menubar (🎚) instead of running the script:
 
 The first run creates a local `.venv` and installs `rumps`. The menu has **Sync now**, live step status, shortcuts to the processed/raw folders, and the last log (`~/Library/Logs/mixer-sync.log`). It checks that the SD card is mounted before starting and posts a notification when the sync finishes.
 
+### Start at login
+
+```bash
+./install-login-item.sh              # install / update
+./install-login-item.sh --uninstall  # remove
+```
+
+This installs a LaunchAgent that starts the menubar item at login. macOS blocks background login jobs from reading `~/Desktop`, so the installer copies the runtime files to `~/Library/Application Support/mixer-sync/` and runs from there. Re-run it after changing `sync.sh` or `menubar.py`. Logs: `~/Library/Logs/mixer-sync-menubar.log`.
+
 ## Output layout
 
 ```
