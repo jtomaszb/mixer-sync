@@ -17,7 +17,6 @@
 set -euo pipefail
 
 LABEL="local.mixer-sync.menubar"
-LEGACY_LABEL="local.mixer-sync.menubar"   # earlier name; cleaned up on update/uninstall
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="${HOME}/Library/Application Support/mixer-sync"
@@ -86,11 +85,6 @@ stop_agent() {
     done
 }
 
-remove_legacy() {
-    launchctl bootout "${DOMAIN}/${LEGACY_LABEL}" 2>/dev/null || true
-    rm -f "${HOME}/Library/LaunchAgents/${LEGACY_LABEL}.plist"
-}
-
 start_agent() {
     [[ -f "$PLIST" ]] || { log "Not installed — run: $0 update"; exit 1; }
     if is_loaded; then
@@ -101,7 +95,6 @@ start_agent() {
 }
 
 cmd_update() {
-    remove_legacy
     stop_agent
     copy_files
     write_plist
@@ -139,6 +132,6 @@ case "${1:-}" in
     restart)        stop_agent; start_agent; log "Restarted" ;;
     status)         cmd_status ;;
     logs)           touch "$LOG"; exec tail -n 50 -f "$LOG" ;;
-    uninstall)      remove_legacy; stop_agent; rm -f "$PLIST"; log "Removed login item (files left in: ${APP_DIR})" ;;
+    uninstall)      stop_agent; rm -f "$PLIST"; log "Removed login item (files left in: ${APP_DIR})" ;;
     *)              sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
