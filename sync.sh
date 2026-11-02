@@ -214,7 +214,7 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  --source DIR   Use DIR instead of auto-detecting SD card from /Volumes
+  --source DIR   Use DIR instead of the default card path ($SOURCE)
   --dest DIR     Override destination (default: $DEST)
   -h, --help     Show this help
 EOF

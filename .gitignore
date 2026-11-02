@@ -1,3 +1,14 @@
 .DS_Store
 .venv/
 __pycache__/
+.claude/
+
+# Recordings and generated audio never belong in the repo
+*.wav
+*.mp3
+*.aif
+*.aiff
+*.flac
+*.m4a
+*.ogg
+*.bin

@@ -1,35 +1,81 @@
 # mixer-sync
 
-Syncs audio from a mixer SD card in three steps:
+Pull recordings off a multitrack recorder's SD card, merge the mono tracks into
+stereo pairs, and peak-normalize them — from one command or one click in the
+macOS menubar.
 
-1. **Copy** — copies new audio files from SD card → `~/Music/Mixer/raw/`
-2. **Merge** — pairs `TrackXXL.wav` + `TrackXXR.wav` split-mono files into a single stereo `TrackXX.wav` → `~/Music/Mixer/processed/`
-3. **Normalize** — peak-normalizes each processed file to **-1 dBFS**
+I built this for a Tascam multitrack recorder that writes one mono WAV per track
+into numbered session folders. It should work with any recorder that uses the
+same layout (see [Expected layout](#expected-layout)).
+
+## What it does
+
+`sync.sh` runs three steps:
+
+1. **Copy** — `rsync` new files from the SD card into `raw/`. Files that already
+   exist are skipped, so it's safe to run repeatedly. Empty tracks (under 100 KB),
+   `*.sys`, `*.bin` and dotfiles are ignored.
+2. **Merge** — pair adjacent odd/even tracks into stereo (`TR01`+`TR02` →
+   `TR01-02`, `TR03`+`TR04` → `TR03-04`, …) with `ffmpeg`. An odd track with no
+   even partner is copied through as mono.
+3. **Normalize** — peak-normalize every file in `processed/` to **-1 dBFS**
+   (in place, only when it isn't already there).
+
+`raw/` is never modified; everything you'd actually use lands in `processed/`.
+
+```
+~/Music/Mixer/
+  raw/<session>/        untouched copies from the SD card
+  processed/<session>/  merged stereo (or mono) files, normalized
+```
+
+## Expected layout
+
+```
+<SD card>/MTR/<session>/<prefix>_TR01.wav
+                        <prefix>_TR02.wav
+                        ...
+```
+
+Track numbers in the `_TRnn.wav` suffix decide the pairing: odd = left channel,
+even = right channel, merged as `<prefix>_TRnn-mm.wav`. The card is expected at
+`/Volumes/Tascam/MTR`; change `SOURCE` in `sync.sh` (and `menubar.py`) for a
+different volume name, or pass `--source`.
 
 ## Requirements
 
-```bash
-brew install ffmpeg
-```
+- macOS (the menubar item and login item use macOS-only APIs; `sync.sh` itself
+  is plain bash)
+- [`ffmpeg`](https://ffmpeg.org): `brew install ffmpeg`
+- `rsync` 3.x is strongly recommended: `brew install rsync`. The system rsync
+  builds a full file list before copying, which is very slow on a big SD card;
+  `sync.sh` prefers the Homebrew one when it's installed.
+- Python 3 for the menubar item (its `rumps` dependency is installed into a local
+  virtualenv automatically)
 
 ## Usage
 
 ```bash
-chmod +x sync.sh   # one-time setup
-./sync.sh
+./sync.sh                              # card at /Volumes/Tascam/MTR → ~/Music/Mixer
+./sync.sh --source /path/to/MTR        # different source folder
+./sync.sh --dest ~/Audio/Mixer         # different destination
+./sync.sh --help
 ```
 
-Plug in your SD card, then run the script. If multiple volumes are detected it will ask you to pick one.
+Re-running is idempotent: existing raw files, merged files and already-normalized
+files are skipped. Note that Step 3 decodes every file in `processed/` to measure
+its peak, so runs get slower as the library grows.
 
-## Menubar item
-
-Click-to-sync from the macOS menubar (🎚) instead of running the script:
+### Menubar item
 
 ```bash
-./run-menubar.sh
+./run-menubar.sh      # try it out in the foreground
 ```
 
-The first run creates a local `.venv` and installs `rumps`. The menu has **Sync now**, live step status, shortcuts to the processed/raw folders, and the last log (`~/Library/Logs/mixer-sync.log`). It checks that the SD card is mounted before starting and posts a notification when the sync finishes.
+A 🎚 icon appears in the menubar. **Sync now** runs `sync.sh`, the icon changes
+to 🎚… with a live step status in the menu, and a notification reports the result.
+It checks the card is mounted first. The menu also opens the `raw/` and
+`processed/` folders and the last sync log.
 
 ### Start at login / updating
 
@@ -43,38 +89,45 @@ The first run creates a local `.venv` and installs `rumps`. The menu has **Sync 
 ./menubar.sh uninstall   # remove the login item
 ```
 
-`update` installs a LaunchAgent that starts the item at every login, and restarts it with the latest code. macOS blocks background login jobs from reading `~/Desktop`, so the runtime files are copied to `~/Library/Application Support/mixer-sync/` and run from there; that installed copy is a snapshot, so run `./menubar.sh update` after editing. `stop` (or **Quit** in the menu) keeps it stopped until the next login or `start`. Logs: `~/Library/Logs/mixer-sync-menubar.log` (app) and `~/Library/Logs/mixer-sync.log` (last sync).
+`update` installs a LaunchAgent (`local.mixer-sync.menubar`) that starts the item
+at every login, and restarts it with the latest code. macOS blocks background
+login jobs from reading `~/Desktop`, `~/Documents` and `~/Downloads`, so the
+runtime files are copied to `~/Library/Application Support/mixer-sync/` and run
+from there. That installed copy is a snapshot: run `./menubar.sh update` after
+editing. `stop` (or **Quit** in the menu) keeps it stopped until the next login
+or `start`.
 
-## Output layout
-
-```
-~/Music/Mixer/
-  raw/          ← untouched copies of every file from the SD card
-  processed/    ← merged stereo + normalized files (ready to use)
-```
-
-## Supported formats
-
-`wav`, `mp3`, `aiff`, `flac`, `m4a`, `ogg`
-
-## L/R pair detection
-
-The script matches files where the name ends in `L` / `R` (case-insensitive), with an optional `_` or `-` separator before the channel letter:
-
-| Left file | Right file | Output |
-|---|---|---|
-| `Track01L.wav` | `Track01R.wav` | `Track01.wav` |
-| `Track01_L.wav` | `Track01_R.wav` | `Track01.wav` |
-| `Track01-L.wav` | `Track01-R.wav` | `Track01.wav` |
-
-Files with no matching pair are left in `raw/` as-is with a warning.
+Logs: `~/Library/Logs/mixer-sync-menubar.log` (app) and
+`~/Library/Logs/mixer-sync.log` (most recent sync).
 
 ## Configuration
 
-Edit the top of `sync.sh` to change defaults:
-
-| Variable | Default | Description |
+| Where | Setting | Default |
 |---|---|---|
-| `DEST` | `~/Music/Mixer` | Root output folder |
-| `PEAK_TARGET` | `-1` | Peak normalization target in dBFS |
-| `AUDIO_EXTENSIONS` | wav mp3 aiff flac m4a ogg | File types to sync |
+| `sync.sh` | `DEST` | `~/Music/Mixer` |
+| `sync.sh` | `SOURCE` | `/Volumes/Tascam/MTR` |
+| `sync.sh` | `PEAK_TARGET` | `-1` (dBFS) |
+| `menubar.py` | `SOURCE`, `DEST` | same as above — keep in sync with `sync.sh` |
+
+## Testing without a recorder
+
+`make-test-data.sh` generates a fake card with a couple of sessions (stereo pairs,
+empty tracks, `.sys`/`.bin` files):
+
+```bash
+./make-test-data.sh /tmp/mock-card
+./sync.sh --source /tmp/mock-card --dest /tmp/mixer-test-out
+```
+
+## Troubleshooting
+
+- **Menubar icon missing** — `./menubar.sh status`. If it's running, the menubar
+  may be full (icons that don't fit are hidden, especially around the notch).
+- **Login item won't start** — `./menubar.sh logs`. Don't point a LaunchAgent at
+  a script under `~/Desktop`; that's what the install-to-Application-Support
+  step avoids.
+- **Slow "building file list"** — you're using the system rsync; `brew install rsync`.
+- **Sync stops silently** — `sync.sh` runs with `set -e`; an `ERR` trap prints the
+  failing line and command. Check `~/Library/Logs/mixer-sync.log`.
+
+Not affiliated with or endorsed by TASCAM.
