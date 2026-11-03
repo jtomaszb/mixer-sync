@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync.sh — Sync mixer SD card audio: copy → merge stereo pairs → normalize
+# sync.sh — Sync mixer SD card audio: copy → merge stereo pairs → trim end silence → normalize
 #
 # Naming convention: {prefix}_TR{NN}.wav
 #   Odd track numbers  = left channel  (TR01, TR03, TR05, ...)
@@ -8,13 +8,20 @@
 #
 # Output layout:
 #   $DEST/raw/{session}/        raw copies from SD (untouched)
-#   $DEST/processed/{session}/  merged stereo + peak-normalized files
+#   $DEST/processed/{session}/  merged stereo, end-trimmed, peak-normalized files
 
 set -Eeuo pipefail
 
 DEST="${HOME}/Music/Mixer"
 SOURCE="/Volumes/Tascam/MTR"
-PEAK_TARGET="-1"   # dBFS
+PEAK_TARGET="-1"            # dBFS
+
+# Trailing-silence trim (step 3)
+TRIM=1                      # set to 0, or pass --no-trim, to skip the step
+SILENCE_THRESHOLD="-50dB"   # at or below this level counts as silence
+SILENCE_MIN="2"             # seconds of silence before the end counts as trimmable
+TRIM_KEEP="0.5"             # seconds of silence left after the last sound
+TRIM_WINDOW="60"            # first tail window scanned, in seconds (doubles as needed)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -153,7 +160,100 @@ merge_stereo_pairs() {
     [[ $errors -gt 0 ]] && return 1 || return 0
 }
 
-# ── step 3: peak-normalize all files in processed/ ───────────────────────────
+# ── step 3: trim trailing silence from files in processed/ ───────────────────
+#
+# Clips can be hours long, so never decode a whole file just to look at its end:
+# scan only the tail, widening the window while the silence runs back past the
+# window's start, then cut with a stream copy (no re-encode).
+
+# Echo "<cut_seconds> <total_seconds>" if the file ends in silence worth trimming.
+# Echo nothing if it doesn't, or "ALL" if the whole file is silent. Return 1 on error.
+trailing_silence_cut() {
+    local file="$1"
+    local dur window="$TRIM_WINDOW" offset len silent_from
+
+    dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file") || return 1
+    [[ -n "$dur" ]] || return 1
+
+    while :; do
+        offset=$(awk -v d="$dur" -v w="$window" 'BEGIN { o = d - w; if (o < 0) o = 0; printf "%.3f", o }')
+        len=$(awk -v d="$dur" -v o="$offset" 'BEGIN { printf "%.3f", d - o }')
+
+        # silencedetect reports times relative to the seek point. A silence is
+        # "open" (runs to EOF) if it started and never ended, or ended at the end.
+        # || true: no silence at all is a normal outcome, not an error.
+        silent_from=$(ffmpeg -nostdin -loglevel info -ss "$offset" -i "$file" \
+                        -af "silencedetect=noise=${SILENCE_THRESHOLD}:d=${SILENCE_MIN}" -f null - 2>&1 \
+                      | awk -v len="$len" '
+                          /silence_start:/ { s = $NF; open = 1 }
+                          /silence_end:/   { if ($5 + 0 < len - 0.1) open = 0 }
+                          END { if (open) print s }' || true)
+
+        [[ -n "$silent_from" ]] || return 0   # file ends with sound
+
+        # Silence reaching the start of the window: look further back, or give up
+        # if the window already covers the whole file.
+        if awk -v s="$silent_from" 'BEGIN { exit !(s <= 0.05) }'; then
+            if awk -v o="$offset" 'BEGIN { exit !(o <= 0) }'; then
+                echo "ALL"
+                return 0
+            fi
+            window=$(awk -v w="$window" 'BEGIN { printf "%d", w * 2 }')
+            continue
+        fi
+
+        awk -v o="$offset" -v s="$silent_from" -v k="$TRIM_KEEP" -v d="$dur" \
+            'BEGIN { printf "%.3f %.3f", o + s + k, d }'
+        return 0
+    done
+}
+
+trim_trailing_silence() {
+    local proc_dir="$1"
+    local trimmed=0 skipped=0 errors=0
+
+    while IFS= read -r file; do
+        local rel="${file#${proc_dir}/}"
+        local tmpfile="${file}.tmp.wav"
+        local result cut total
+
+        if ! result=$(trailing_silence_cut "$file"); then
+            warn "Could not scan: $rel"
+            errors=$((errors + 1))
+            continue
+        fi
+
+        if [[ -z "$result" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ "$result" == "ALL" ]]; then
+            warn "Entirely silent, leaving as is: $rel"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        read -r cut total <<< "$result"
+        info "Trimming: $rel  ($(awk -v t="$total" 'BEGIN { printf "%.1f", t }')s → ${cut}s)"
+
+        if ffmpeg -nostdin -loglevel error -y -i "$file" -t "$cut" -c copy "$tmpfile" \
+           && mv "$tmpfile" "$file"; then
+            ok "Trimmed: $rel"
+            trimmed=$((trimmed + 1))
+        else
+            rm -f "$tmpfile"
+            err "Trim failed: $rel"
+            errors=$((errors + 1))
+        fi
+
+    done < <(find "$proc_dir" -iname "*.wav" ! -name "*.tmp.wav" -type f | sort)
+
+    log ""
+    log "  Trimmed: $trimmed  |  Skipped: $skipped  |  Errors: $errors"
+    [[ $errors -gt 0 ]] && return 1 || return 0
+}
+
+# ── step 4: peak-normalize all files in processed/ ───────────────────────────
 
 normalize_files() {
     local proc_dir="$1"
@@ -200,7 +300,7 @@ normalize_files() {
             ((errors++))
         fi
 
-    done < <(find "$proc_dir" -iname "*.wav" -type f | sort)
+    done < <(find "$proc_dir" -iname "*.wav" ! -name "*.tmp.wav" -type f | sort)
 
     log ""
     log "  Normalized: $normalized  |  Skipped: $skipped  |  Errors: $errors"
@@ -216,6 +316,7 @@ Usage: $(basename "$0") [OPTIONS]
 Options:
   --source DIR   Use DIR instead of the default card path ($SOURCE)
   --dest DIR     Override destination (default: $DEST)
+  --no-trim      Skip trimming trailing silence (step 3)
   -h, --help     Show this help
 EOF
     exit 0
@@ -223,6 +324,7 @@ EOF
 
 main() {
     require ffmpeg
+    require ffprobe
     require rsync
 
     local source_override=""
@@ -231,6 +333,7 @@ main() {
         case "$1" in
             --source) source_override="$2"; shift 2 ;;
             --dest)   DEST="$2";            shift 2 ;;
+            --no-trim) TRIM=0;              shift ;;
             -h|--help) usage ;;
             *) err "Unknown option: $1"; usage ;;
         esac
@@ -261,8 +364,18 @@ main() {
     log ""
     merge_stereo_pairs "$raw_dir" "$proc_dir"
 
-    # ── 3. Normalize ─────────────────────────────────────────────────────────
-    step "Step 3: Normalize to ${PEAK_TARGET} dBFS peak"
+    # ── 3. Trim trailing silence ─────────────────────────────────────────────
+    if [[ "$TRIM" == 1 ]]; then
+        step "Step 3: Trim trailing silence"
+        info "Silence: below ${SILENCE_THRESHOLD} for ${SILENCE_MIN}s+, keeping ${TRIM_KEEP}s after the last sound"
+        log ""
+        trim_trailing_silence "$proc_dir"
+    else
+        step "Step 3: Trim trailing silence (skipped: --no-trim)"
+    fi
+
+    # ── 4. Normalize ─────────────────────────────────────────────────────────
+    step "Step 4: Normalize to ${PEAK_TARGET} dBFS peak"
     info "Processing files in $proc_dir"
     log ""
     normalize_files "$proc_dir"

@@ -89,9 +89,14 @@ class MixerSync(rumps.App):
             code, tail = -1, [str(exc)]
 
         if code == 0:
-            merged = next((l for l in reversed(tail) if l.startswith("Merged:")), "")
-            norm = next((l for l in reversed(tail) if l.startswith("Normalized:")), "")
-            notify("Mixer Sync finished", " / ".join(filter(None, [merged, norm])) or "All done")
+            # sync.sh summary lines look like "Merged: 3  |  Skipped: 0  |  Errors: 0";
+            # report just the leading count for each step.
+            parts = []
+            for key in ("Merged:", "Trimmed:", "Normalized:"):
+                line = next((l for l in reversed(tail) if l.startswith(key)), "")
+                if line:
+                    parts.append(line.split("|")[0].strip())
+            notify("Mixer Sync finished", " · ".join(parts) or "All done")
             self.status.title = "Last sync: OK"
         else:
             notify("Mixer Sync failed", tail[-1] if tail else f"exit {code}")

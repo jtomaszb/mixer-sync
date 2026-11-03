@@ -1,8 +1,8 @@
 # mixer-sync
 
 Pull recordings off a multitrack recorder's SD card, merge the mono tracks into
-stereo pairs, and peak-normalize them — from one command or one click in the
-macOS menubar.
+stereo pairs, trim the silence off the end, and peak-normalize them — from one
+command or one click in the macOS menubar.
 
 I built this for a Tascam multitrack recorder that writes one mono WAV per track
 into numbered session folders. It should work with any recorder that uses the
@@ -10,7 +10,7 @@ same layout (see [Expected layout](#expected-layout)).
 
 ## What it does
 
-`sync.sh` runs three steps:
+`sync.sh` runs four steps:
 
 1. **Copy** — `rsync` new files from the SD card into `raw/`. Files that already
    exist are skipped, so it's safe to run repeatedly. Empty tracks (under 100 KB),
@@ -18,7 +18,13 @@ same layout (see [Expected layout](#expected-layout)).
 2. **Merge** — pair adjacent odd/even tracks into stereo (`TR01`+`TR02` →
    `TR01-02`, `TR03`+`TR04` → `TR03-04`, …) with `ffmpeg`. An odd track with no
    even partner is copied through as mono.
-3. **Normalize** — peak-normalize every file in `processed/` to **-1 dBFS**
+3. **Trim** — cut trailing silence off every file in `processed/`. Silence is
+   anything below -50 dB for at least 2 seconds at the end of a clip; the cut
+   leaves 0.5 s after the last sound. Only the tail is scanned (clips can be
+   hours long) and the cut is a stream copy, so there's no re-encode. A file
+   that is silent from start to end is left alone. Skip the step with
+   `--no-trim`.
+4. **Normalize** — peak-normalize every file in `processed/` to **-1 dBFS**
    (in place, only when it isn't already there).
 
 `raw/` is never modified; everything you'd actually use lands in `processed/`.
@@ -59,12 +65,13 @@ different volume name, or pass `--source`.
 ./sync.sh                              # card at /Volumes/Tascam/MTR → ~/Music/Mixer
 ./sync.sh --source /path/to/MTR        # different source folder
 ./sync.sh --dest ~/Audio/Mixer         # different destination
+./sync.sh --no-trim                    # skip trimming trailing silence
 ./sync.sh --help
 ```
 
-Re-running is idempotent: existing raw files, merged files and already-normalized
-files are skipped. Note that Step 3 decodes every file in `processed/` to measure
-its peak, so runs get slower as the library grows.
+Re-running is idempotent: existing raw files, merged files, already-trimmed files
+and already-normalized files are skipped. Note that Step 4 decodes every file in
+`processed/` to measure its peak, so runs get slower as the library grows.
 
 ### Menubar item
 
@@ -72,7 +79,8 @@ its peak, so runs get slower as the library grows.
 ./run-menubar.sh      # try it out in the foreground
 ```
 
-A 🎚 icon appears in the menubar. **Sync now** runs `sync.sh`, the icon changes
+A 🎚 icon appears in the menubar. (The menubar app always runs the default
+settings; edit `sync.sh` to change the trim threshold there.) **Sync now** runs `sync.sh`, the icon changes
 to 🎚… with a live step status in the menu, and a notification reports the result.
 It checks the card is mounted first. The menu also opens the `raw/` and
 `processed/` folders and the last sync log.
@@ -107,6 +115,11 @@ Logs: `~/Library/Logs/mixer-sync-menubar.log` (app) and
 | `sync.sh` | `DEST` | `~/Music/Mixer` |
 | `sync.sh` | `SOURCE` | `/Volumes/Tascam/MTR` |
 | `sync.sh` | `PEAK_TARGET` | `-1` (dBFS) |
+| `sync.sh` | `TRIM` | `1` (set `0` or use `--no-trim` to skip) |
+| `sync.sh` | `SILENCE_THRESHOLD` | `-50dB` — at or below this counts as silence |
+| `sync.sh` | `SILENCE_MIN` | `2` — seconds of silence before the end is trimmed |
+| `sync.sh` | `TRIM_KEEP` | `0.5` — seconds left after the last sound |
+| `sync.sh` | `TRIM_WINDOW` | `60` — first tail window scanned, in seconds (doubles as needed) |
 | `menubar.py` | `SOURCE`, `DEST` | same as above — keep in sync with `sync.sh` |
 
 ## Testing without a recorder
