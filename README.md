@@ -91,7 +91,11 @@ settings; edit `sync.sh` to change the trim threshold there.) **Sync now** runs 
 to 🎚… with a live step status in the menu, and a notification reports the result.
 It checks the card is mounted first. **Check SD card for new files** reports what's
 on the card that hasn't been synced, without copying anything: the icon becomes 🎚●
-and the sync item reads "Sync now (3 new)" until you sync. The menu also opens the
+and the sync item reads "Sync now (3 new)" until you sync. **Clean up raw files…**
+runs [`clean_raw.py`](#cleaning-raw): it verifies the raw files against `processed/`
+(a dry run), then asks for confirmation (Cancel is the default) showing how many tracks
+and how much space it found, and only then moves the verified ones to the Trash, so it
+can be undone. Run it from a terminal for `--delete` or per-session cleaning. The menu also opens the
 `raw/` and `processed/` folders and the last sync log.
 
 ### Start at login / updating

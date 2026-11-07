@@ -7,6 +7,7 @@ Run with ./run-menubar.sh (uses the local .venv with rumps installed).
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ import rumps
 
 HERE = Path(__file__).resolve().parent
 SYNC = HERE / "sync.sh"
+CLEAN = HERE / "clean_raw.py"
 SOURCE = Path("/Volumes/Tascam/MTR")
 DEST = Path.home() / "Music" / "Mixer"
 LOG = Path.home() / "Library" / "Logs" / "mixer-sync.log"
@@ -22,6 +24,8 @@ LOG = Path.home() / "Library" / "Logs" / "mixer-sync.log"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STEP = re.compile(r"^Step (\d): (.*)")
 CHECK_RESULT = re.compile(r"^Result: new=(\d+) bytes=(\d+) changed=(\d+)$")
+CLEAN_VERIFIED = re.compile(r"^Verified: (\d+) file\(s\), (\d+) raw track\(s\), (.+) can be freed$")
+CLEAN_REMOVED = re.compile(r"^Removed (\d+) raw track\(s\)")
 
 # GUI apps don't inherit the shell PATH; sync.sh needs ffmpeg and rsync from brew.
 ENV = {**os.environ, "PATH": f"/opt/homebrew/bin:/usr/local/bin:{os.environ.get('PATH', '')}"}
@@ -37,6 +41,15 @@ def human(n):
     return f"{n:.1f} TB"
 
 
+def confirm(title, message, ok_label):
+    """Modal dialog via osascript (safe off the main thread). Cancel is the default button."""
+    esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+    script = (f'display dialog "{esc(message)}" with title "{esc(title)}" '
+              f'buttons {{"Cancel", "{esc(ok_label)}"}} default button "Cancel" '
+              f'cancel button "Cancel" with icon caution')
+    return subprocess.run(["osascript", "-e", script], capture_output=True, check=False).returncode == 0
+
+
 def notify(title, message):
     # osascript works without an app bundle, unlike rumps.notification on recent macOS.
     esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
@@ -50,9 +63,11 @@ class MixerSync(rumps.App):
         self.status = rumps.MenuItem("Idle")
         self.sync_item = rumps.MenuItem("Sync now", callback=self.sync_now)
         self.check_item = rumps.MenuItem("Check SD card for new files", callback=self.check_card)
+        self.clean_item = rumps.MenuItem("Clean up raw files…", callback=self.clean_raw)
         self.menu = [
             self.sync_item,
             self.check_item,
+            self.clean_item,
             self.status,
             None,
             rumps.MenuItem("Open processed folder", callback=lambda _: self.open(DEST / "processed")),
@@ -82,6 +97,7 @@ class MixerSync(rumps.App):
         self.title = BUSY if busy else IDLE
         self.sync_item.set_callback(None if busy else self.sync_now)
         self.check_item.set_callback(None if busy else self.check_card)
+        self.clean_item.set_callback(None if busy else self.clean_raw)
 
     def check_card(self, _):
         if self.running:
@@ -93,6 +109,74 @@ class MixerSync(rumps.App):
         self.set_busy(True)
         self.status.title = "Checking card…"
         threading.Thread(target=self.run_check, daemon=True).start()
+
+    def clean_raw(self, _):
+        if self.running:
+            return
+        if not (DEST / "raw").is_dir() or not (DEST / "processed").is_dir():
+            notify("Mixer Sync", "No raw/ and processed/ folders to clean yet")
+            return
+        self.set_busy(True)
+        self.status.title = "Verifying raw files…"
+        threading.Thread(target=self.run_clean, daemon=True).start()
+
+    def run_clean(self):
+        """Verify raw against processed (dry run), confirm, then move the verified files to the Trash.
+
+        clean_raw.py only selects raw files it has proven are fully represented in
+        processed/, and --trash keeps them recoverable. The dialog shows what it found;
+        Cancel is the default button.
+        """
+        def run(*extra):
+            p = subprocess.run([sys.executable, str(CLEAN), "--dest", str(DEST), *extra],
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                               env=ENV, timeout=3600)
+            return p, [l.strip() for l in ANSI.sub("", p.stdout).splitlines()]
+
+        def last_match(pattern, lines):
+            return next((m for m in map(pattern.match, reversed(lines)) if m), None)
+
+        def fail(p, lines, fallback):
+            err = (p.stderr.strip().splitlines() or lines[-1:] or [fallback])[-1]
+            notify("Mixer Sync", f"Raw cleanup failed: {err}")
+            self.status.title = "Raw cleanup failed"
+
+        try:
+            p, lines = run()
+            found = last_match(CLEAN_VERIFIED, lines)
+            if p.returncode != 0 or not found:
+                return fail(p, lines, "verification failed")
+            tracks, size = int(found.group(2)), found.group(3)
+            if not tracks:
+                notify("Mixer Sync", "Nothing to clean: no raw files could be verified")
+                self.status.title = "Raw cleanup: nothing to clean"
+                return
+
+            self.status.title = f"Waiting for confirmation ({tracks} tracks)…"
+            if not confirm(
+                "Clean up raw files",
+                f"{tracks} raw track(s) ({size}) are verified against their processed copies.\n\n"
+                "Move them to the Trash? processed/ will be the only copy left in your library, "
+                "so make sure it's backed up.",
+                "Move to Trash",
+            ):
+                self.status.title = "Raw cleanup cancelled"
+                return
+
+            self.status.title = "Moving raw files to the Trash…"
+            p, lines = run("--trash", "--yes")
+            done = last_match(CLEAN_REMOVED, lines)
+            if p.returncode != 0 or not done:
+                return fail(p, lines, "cleanup failed")
+            notify("Mixer Sync: raw cleanup", f"Moved {done.group(1)} raw track(s) ({size}) to the Trash")
+            self.status.title = f"Cleaned {done.group(1)} raw tracks ({time.strftime('%H:%M')})"
+        except Exception as exc:  # timeout, clean_raw.py missing, ...
+            notify("Mixer Sync", f"Raw cleanup failed: {exc}")
+            self.status.title = "Raw cleanup failed"
+        finally:
+            self.set_busy(False)
+            if self.sync_item.title != "Sync now":
+                self.title = PENDING  # an earlier check's unsynced files are still pending
 
     def run_check(self):
         """Run `sync.sh --check` (metadata only, a few seconds) and report what's unsynced."""

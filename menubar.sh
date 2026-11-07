@@ -22,7 +22,7 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="${HOME}/Library/Application Support/mixer-sync"
 LOG="${HOME}/Library/Logs/mixer-sync-menubar.log"
 DOMAIN="gui/$(id -u)"
-FILES=(menubar.py sync.sh run-menubar.sh)
+FILES=(menubar.py sync.sh clean_raw.py run-menubar.sh)
 
 log() { printf '%s\n' "$*"; }
 
@@ -36,7 +36,7 @@ copy_files() {
     for f in "${FILES[@]}"; do
         cp "$SRC/$f" "$APP_DIR/$f"
     done
-    chmod +x "$APP_DIR/sync.sh" "$APP_DIR/run-menubar.sh" "$APP_DIR/menubar.py"
+    chmod +x "$APP_DIR/sync.sh" "$APP_DIR/clean_raw.py" "$APP_DIR/run-menubar.sh" "$APP_DIR/menubar.py"
 
     # Build the venv now so the first login start doesn't depend on the network.
     if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
