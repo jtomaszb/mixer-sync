@@ -32,7 +32,9 @@ same layout (see [Expected layout](#expected-layout)).
 Everything written to `processed/` is **24-bit PCM** (matching the recorder), so
 merging and normalizing don't cost you bit depth.
 
-`raw/` is never modified; everything you'd actually use lands in `processed/`.
+`sync.sh` never modifies `raw/`; everything you'd actually use lands in
+`processed/`. When you want the space back, [`clean_raw.py`](#cleaning-raw)
+removes raw files only after proving the processed copy lost nothing.
 
 ```
 ~/Music/Mixer/
@@ -140,7 +142,44 @@ rm -rf ~/Music/Mixer/processed
 ./sync.sh
 ```
 
-`raw/` is never modified, so nothing is lost.
+`raw/` is never modified by `sync.sh`, so nothing is lost, as long as you haven't
+[cleaned](#cleaning-raw) the raw files you're rebuilding from.
+
+## Cleaning raw
+
+Once files are processed you can reclaim the space taken by `raw/`. `clean_raw.py`
+only removes raw files it can prove are fully represented in `processed/`:
+
+```bash
+./clean_raw.py                  # dry run: verify and report, change nothing
+./clean_raw.py --trash          # move verified raw files to the Trash (recoverable)
+./clean_raw.py --delete         # permanently delete them (asks first; --yes to skip)
+./clean_raw.py --session 261022_0001   # only one session folder
+```
+
+For each processed file it checks, with `ffmpeg`:
+
+- the processed file exists, is **24-bit** PCM, and has the right channels and rate;
+- its audio equals the raw audio times one gain (what normalize applied), to within
+  24-bit rounding: the gain is fitted from the RMS, then `processed − gain × raw` is
+  measured and must sit near the 24-bit noise floor (about -138 dBFS; the check
+  allows -110). A 16-bit copy, a wrong or damaged file, or mismatched audio all fail;
+- if the processed file is shorter (trimmed silence), the raw audio past the cut is
+  really silent.
+
+Anything that fails is **kept** and the reason is printed. Raw tracks that
+`sync.sh` never processes (for example an even track with no odd partner) are also
+kept. Verification is slow-ish, reading each file a few times, so `-j` runs several
+in parallel; files cleaned on an earlier run aren't re-checked.
+
+Removed files are listed in `raw/.cleaned`. `sync.sh` hands that list to rsync, so
+a card that still holds those recordings doesn't get them copied back. (rsync may
+recreate empty session folders; they're harmless.)
+
+Cleaning makes `processed/` the only copy of those recordings, so keep it backed up,
+and note that a rebuild of `processed/` can only use raw files that are still there.
+If your `processed/` predates the 24-bit change it will be flagged as 16-bit and
+nothing will be cleaned until you rebuild it.
 
 ## Testing without a recorder
 
@@ -151,6 +190,10 @@ empty tracks, `.sys`/`.bin` files):
 ./make-test-data.sh /tmp/mock-card
 ./sync.sh --source /tmp/mock-card --dest /tmp/mixer-test-out
 ```
+
+`./test-clean-raw.sh` is a self-test for the raw cleaner: it builds a scratch library,
+checks that good files verify and damaged ones are refused, and that cleaning and the
+`.cleaned` list behave. It never touches your real library.
 
 ## Troubleshooting
 

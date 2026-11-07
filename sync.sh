@@ -64,10 +64,17 @@ copy_from_sd() {
         warn "Using $rsync_bin — slow file listing; 'brew install rsync' for a faster scan"
     fi
 
+    # Files removed from raw/ by clean_raw.py are listed in raw/.cleaned; skip them so
+    # a card that still holds them doesn't get copied again. (${arr[@]+...} keeps an
+    # empty array safe under set -u on bash 3.2.)
+    local cleaned=()
+    [[ -f "${raw_dir}/.cleaned" ]] && cleaned=(--exclude-from="${raw_dir}/.cleaned")
+
     # rsync: archive mode, skip files that already exist at destination
     # -a: preserve timestamps/permissions, -v: verbose, --ignore-existing: skip existing
     "$rsync_bin" -av --ignore-existing --min-size=100k \
           --exclude="*.sys" --exclude="*.bin" --exclude=".*" \
+          ${cleaned[@]+"${cleaned[@]}"} \
           "${source}/" "${raw_dir}/"
 }
 
