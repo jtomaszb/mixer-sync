@@ -37,8 +37,10 @@ ff -i "$P/260206_0001/01_260206_0001_TR03-04.wav" -t 2 -c copy "$WORK/x.wav"    
 cp "$WORK/x.wav" "$P/260206_0001/01_260206_0001_TR03-04.wav"
 ff -f lavfi -i "sine=frequency=440:duration=6" -ar 48000 -ac 1 -c:a pcm_s24le \
    "$P/251116_0001/01_251116_0001_TR07.wav"                                                   # sound where raw is silent
-# Left intact: 260206 TR01-02 and TR05, so 2 of 7 should still verify.
-check "5 of 7 damaged files rejected" 2 "$(verified "$WORK/neg")"
+ff -i "$P/260206_0001/01_260206_0001_TR01-02.wav" -af volume=-60dB -c:a pcm_s24le "$WORK/x.wav"  # attenuated 60 dB
+cp "$WORK/x.wav" "$P/260206_0001/01_260206_0001_TR01-02.wav"
+# Left intact: only 260206 TR05, so 1 of 7 should still verify.
+check "6 of 7 damaged files rejected" 1 "$(verified "$WORK/neg")"
 
 echo "Delete and re-sync:"
 raw_before=$(find "$WORK/lib/raw" -name '*.wav' | wc -l | tr -d ' ')

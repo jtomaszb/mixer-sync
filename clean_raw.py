@@ -99,7 +99,7 @@ def raw_chain(n_raw):
 
 # ── verification ─────────────────────────────────────────────────────────────
 
-def verify(item, tolerance_db, tail_db):
+def verify(item, tolerance_db, tail_db, min_gain_db):
     raws = item.raws
     if not item.proc.is_file():
         raise VerifyError("no processed file yet")
@@ -137,6 +137,14 @@ def verify(item, tolerance_db, tail_db):
         raise VerifyError("silent in one of raw/processed but not the other")
     else:
         gain = 10 ** ((rms_p - rms_r) / 20)
+
+    # The null test below is absolute (dBFS), so a heavily attenuated copy would pass it
+    # while having kept fewer of the raw's bits. Normalize boosts quiet tracks (by up to
+    # ~60 dB) and only trims a hair off loud ones, so cap how far the fit may attenuate.
+    gain_db = 20 * math.log10(gain)
+    if gain_db < min_gain_db:
+        raise VerifyError(f"processed is {-gain_db:.1f} dB quieter than raw (fitted gain {gain_db:+.1f} dB); "
+                          f"normalize never attenuates that much, so detail may have been lost (see --min-gain)")
 
     # Pass 3: null test. processed - gain*raw must be at the 24-bit noise floor.
     graph = (f"{chain},aformat=sample_fmts=dbl,atrim=end_sample={n_proc},"
@@ -258,6 +266,10 @@ def main():
     ap.add_argument("-j", "--jobs", type=int, default=2, help="files to verify in parallel (default: 2)")
     ap.add_argument("--tolerance", type=float, default=-110.0, metavar="DBFS",
                     help="max allowed null-test residual (default: -110; a clean 24-bit copy is near -138)")
+    ap.add_argument("--min-gain", type=float, default=-3.0, metavar="DB",
+                    help="most the processed file may be quieter than raw (default: -3; with "
+                         "PEAK_TARGET -1, normalize attenuates at most 1 dB). Lower it if you set "
+                         "PEAK_TARGET in sync.sh below -3")
     ap.add_argument("--tail-threshold", type=float, default=-50.0, metavar="DBFS",
                     help="trimmed-off audio must be at or below this (default: -50, matches sync.sh)")
     args = ap.parse_args()
@@ -273,7 +285,7 @@ def main():
     print(f"Verifying {len(items)} processed file(s) against {sum(len(i.raws) for i in items)} raw track(s)...\n")
 
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        futures = {pool.submit(verify, i, args.tolerance, args.tail_threshold): i for i in items}
+        futures = {pool.submit(verify, i, args.tolerance, args.tail_threshold, args.min_gain): i for i in items}
         for n, fut in enumerate(as_completed(futures), 1):
             item = futures[fut]
             try:
