@@ -164,6 +164,10 @@ For each processed file it checks, with `ffmpeg`:
   24-bit rounding: the gain is fitted from the RMS, then `processed − gain × raw` is
   measured and must sit near the 24-bit noise floor (about -138 dBFS; the check
   allows -110). A 16-bit copy, a wrong or damaged file, or mismatched audio all fail;
+- the fitted gain isn't an attenuation of more than 3 dB (`--min-gain`). The null test
+  alone is absolute, so a heavily attenuated copy would pass it while keeping fewer
+  of the raw's bits; normalize boosts quiet tracks but never cuts that much. Lower
+  `--min-gain` if you set `PEAK_TARGET` in `sync.sh` below -3;
 - if the processed file is shorter (trimmed silence), the raw audio past the cut is
   really silent.
 
