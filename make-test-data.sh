@@ -7,7 +7,8 @@
 # Creates a directory that mimics /Volumes/Tascam/MTR/ with two sessions:
 #   - 251116_0001: 3 stereo pairs (TR01-06; pair 3 has a silent tail), one fully
 #                  silent track (TR07), TR08-16 empty (skipped by --min-size)
-#   - 260206_0001: 2 stereo pairs (TR01-04), rest empty
+#   - 260206_0001: 2 stereo pairs (TR01-04), one very quiet track (TR05, -80 dB),
+#                  rest empty
 #   Also includes song.sys and tempTr*.bin files (should be excluded)
 #
 # After running, test with:
@@ -118,10 +119,15 @@ make_wav "${SESSION2}/${PREFIX2}_TR03.wav" 1320 4 -2
 make_wav "${SESSION2}/${PREFIX2}_TR04.wav" 1540 4 -9
 ok "  TR03 + TR04"
 
-for n in 05 06 07 08 09 10 11 12 13 14 15 16; do
+# TR05: a very quiet track (-80 dB peak), like a dead channel picking up noise.
+# Normalize must leave it alone (below the floor) instead of boosting it ~80 dB.
+make_wav "${SESSION2}/${PREFIX2}_TR05.wav" 200 6 -80
+ok "  TR05 (-80 dB, below the normalize floor)"
+
+for n in 06 07 08 09 10 11 12 13 14 15 16; do
     make_empty_wav "${SESSION2}/${PREFIX2}_TR${n}.wav"
 done
-ok "  TR05–TR16 (empty)"
+ok "  TR06–TR16 (empty)"
 
 make_junk_file "${SESSION2}/song.sys"
 for n in $(seq 1 12); do

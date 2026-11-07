@@ -15,6 +15,9 @@ set -Eeuo pipefail
 DEST="${HOME}/Music/Mixer"
 SOURCE="/Volumes/Tascam/MTR"
 PEAK_TARGET="-1"            # dBFS
+NORMALIZE_FLOOR="-60"       # dBFS; files whose peak is below this are not normalized
+                            # (near-silent/dead tracks: boosting them only amplifies noise)
+AUDIO_CODEC="pcm_s24le"     # processed files are written as 24-bit PCM
 
 # Trailing-silence trim (step 3)
 TRIM=1                      # set to 0, or pass --no-trim, to skip the step
@@ -144,6 +147,7 @@ merge_stereo_pairs() {
                   -i "$lfile" -i "$rfile" \
                   -filter_complex "[0:a][1:a]join=inputs=2:channel_layout=stereo[out]" \
                   -map "[out]" \
+                  -c:a "$AUDIO_CODEC" \
                   "$out_file"; then
             ok "Merged: ${session_dir}/${out_name}"
             ((merged++))
@@ -278,6 +282,14 @@ normalize_files() {
             continue
         fi
 
+        # Near-silent files (or digital silence, reported as -inf) aren't worth boosting.
+        if [[ "$max_vol" == *inf* ]] \
+           || awk -v m="$max_vol" -v f="$NORMALIZE_FLOOR" 'BEGIN { exit !(m + 0 < f + 0) }'; then
+            warn "Below ${NORMALIZE_FLOOR} dB floor (peak ${max_vol} dB), not normalizing: $rel"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
         # Gain needed: target - max_vol  (max_vol is negative, e.g. -3.2 dB)
         local gain
         gain=$(awk -v t="$PEAK_TARGET" -v m="$max_vol" 'BEGIN { printf "%.2f", t - m }')
@@ -290,7 +302,7 @@ normalize_files() {
 
         info "Normalizing: $rel  (peak ${max_vol} dB → ${PEAK_TARGET} dBFS, gain ${gain} dB)"
 
-        if ffmpeg -nostdin -loglevel error -i "$file" -af "volume=${gain}dB" "$tmpfile" \
+        if ffmpeg -nostdin -loglevel error -y -i "$file" -af "volume=${gain}dB" -c:a "$AUDIO_CODEC" "$tmpfile" \
            && mv "$tmpfile" "$file"; then
             ok "Normalized: $rel"
             ((normalized++))

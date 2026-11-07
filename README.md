@@ -25,7 +25,12 @@ same layout (see [Expected layout](#expected-layout)).
    that is silent from start to end is left alone. Skip the step with
    `--no-trim`.
 4. **Normalize** — peak-normalize every file in `processed/` to **-1 dBFS**
-   (in place, only when it isn't already there).
+   (in place, only when it isn't already there). Files whose peak is below
+   **-60 dBFS** are skipped: they're dead or near-silent tracks, and boosting
+   them would just turn noise into loud noise.
+
+Everything written to `processed/` is **24-bit PCM** (matching the recorder), so
+merging and normalizing don't cost you bit depth.
 
 `raw/` is never modified; everything you'd actually use lands in `processed/`.
 
@@ -115,12 +120,27 @@ Logs: `~/Library/Logs/mixer-sync-menubar.log` (app) and
 | `sync.sh` | `DEST` | `~/Music/Mixer` |
 | `sync.sh` | `SOURCE` | `/Volumes/Tascam/MTR` |
 | `sync.sh` | `PEAK_TARGET` | `-1` (dBFS) |
+| `sync.sh` | `NORMALIZE_FLOOR` | `-60` (dBFS) — quieter files aren't normalized |
+| `sync.sh` | `AUDIO_CODEC` | `pcm_s24le` — output format of merged/normalized files |
 | `sync.sh` | `TRIM` | `1` (set `0` or use `--no-trim` to skip) |
 | `sync.sh` | `SILENCE_THRESHOLD` | `-50dB` — at or below this counts as silence |
 | `sync.sh` | `SILENCE_MIN` | `2` — seconds of silence before the end is trimmed |
 | `sync.sh` | `TRIM_KEEP` | `0.5` — seconds left after the last sound |
 | `sync.sh` | `TRIM_WINDOW` | `60` — first tail window scanned, in seconds (doubles as needed) |
 | `menubar.py` | `SOURCE`, `DEST` | same as above — keep in sync with `sync.sh` |
+
+## Rebuilding `processed/`
+
+Settings changes (bit depth, trim threshold, normalize floor) only apply to files
+as they're created, and already-normalized files are skipped. To regenerate the
+whole library from the untouched originals, remove `processed/` and re-run:
+
+```bash
+rm -rf ~/Music/Mixer/processed
+./sync.sh
+```
+
+`raw/` is never modified, so nothing is lost.
 
 ## Testing without a recorder
 
