@@ -171,6 +171,10 @@ class MixerSync(rumps.App):
             notify("Mixer Sync failed", tail[-1] if tail else f"exit {code}")
             self.status.title = f"Last sync failed (exit {code})"
         self.set_busy(False)
+        if self.sync_item.title != "Sync now":
+            # A failed sync leaves the files an earlier check found still unsynced: keep the
+            # icon in step with the "Sync now (N new)" label (success resets the label above).
+            self.title = PENDING
 
 
 if __name__ == "__main__":
