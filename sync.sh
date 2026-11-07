@@ -35,8 +35,12 @@ warn() { printf '\033[1;33m!\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
-# Under set -e a failing command exits silently; say where it happened.
-trap 'err "Exited unexpectedly at line $LINENO (status $?): $BASH_COMMAND"' ERR
+# Under set -e a failing command exits silently. Remember the last failure and, only
+# if the script actually exits with an error, say where. (Printing from the ERR trap
+# itself would also fire for failures the script handles, e.g. `cmd || fallback`.)
+LAST_FAILURE=""
+trap 'LAST_FAILURE="line $LINENO (status $?): $BASH_COMMAND"' ERR
+trap 'rc=$?; if [[ $rc -ne 0 && -n "$LAST_FAILURE" ]]; then err "Exited with status $rc. Last failure seen: $LAST_FAILURE"; fi' EXIT
 
 require() {
     if ! command -v "$1" &>/dev/null; then
@@ -224,13 +228,13 @@ merge_stereo_pairs() {
             local mono_out="${out_session_dir}/${filename}"
             if [[ -e "$mono_out" ]]; then
                 warn "Skipping mono (exists): ${session_dir}/${filename}"
-                ((skipped++))
+                skipped=$((skipped + 1))
             elif cp "$lfile" "$mono_out"; then
                 ok "Copied mono: ${session_dir}/${filename}"
-                ((merged++))
+                merged=$((merged + 1))
             else
                 err "Copy failed: ${session_dir}/${filename}"
-                ((errors++))
+                errors=$((errors + 1))
             fi
             continue
         fi
@@ -243,7 +247,7 @@ merge_stereo_pairs() {
 
         if [[ -e "$out_file" ]]; then
             warn "Skipping (exists): ${session_dir}/${out_name}"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
@@ -255,11 +259,11 @@ merge_stereo_pairs() {
                   -c:a "$AUDIO_CODEC" \
                   "$out_file"; then
             ok "Merged: ${session_dir}/${out_name}"
-            ((merged++))
+            merged=$((merged + 1))
         else
             err "Merge failed: $out_name"
             rm -f "$out_file"
-            ((errors++))
+            errors=$((errors + 1))
         fi
 
     done < <(find "$raw_dir" -iname "*_tr[0-9]*.wav" -type f | sort)
@@ -282,7 +286,8 @@ trailing_silence_cut() {
     local dur window="$TRIM_WINDOW" offset len silent_from
 
     dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file") || return 1
-    [[ -n "$dur" ]] || return 1
+    # A WAV with no usable duration reports "N/A"; treat that as unscannable, not as a number.
+    [[ "$dur" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
 
     while :; do
         offset=$(awk -v d="$dur" -v w="$window" 'BEGIN { o = d - w; if (o < 0) o = 0; printf "%.3f", o }')
@@ -383,7 +388,7 @@ normalize_files() {
 
         if [[ -z "$max_vol" ]]; then
             warn "Could not detect peak for: $rel"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
@@ -401,7 +406,7 @@ normalize_files() {
 
         if [[ "$gain" == "0.00" ]]; then
             ok "Already at target: $rel"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
@@ -410,11 +415,11 @@ normalize_files() {
         if ffmpeg -nostdin -loglevel error -y -i "$file" -af "volume=${gain}dB" -c:a "$AUDIO_CODEC" "$tmpfile" \
            && mv "$tmpfile" "$file"; then
             ok "Normalized: $rel"
-            ((normalized++))
+            normalized=$((normalized + 1))
         else
             rm -f "$tmpfile"
             err "Failed: $rel"
-            ((errors++))
+            errors=$((errors + 1))
         fi
 
     done < <(find "$proc_dir" -iname "*.wav" ! -name "*.tmp.wav" -type f | sort)
@@ -500,7 +505,9 @@ main() {
         step "Step 3: Trim trailing silence"
         info "Silence: below ${SILENCE_THRESHOLD} for ${SILENCE_MIN}s+, keeping ${TRIM_KEEP}s after the last sound"
         log ""
-        trim_trailing_silence "$proc_dir"
+        # Trim is optional polish: a clip that can't be scanned shouldn't stop the
+        # rest of the files from being normalized.
+        trim_trailing_silence "$proc_dir" || warn "Trim step had errors (see above); continuing to normalize"
     else
         step "Step 3: Trim trailing silence (skipped: --no-trim)"
     fi
