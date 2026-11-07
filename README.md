@@ -89,8 +89,10 @@ and already-normalized files are skipped. Note that Step 4 decodes every file in
 A 🎚 icon appears in the menubar. (The menubar app always runs the default
 settings; edit `sync.sh` to change the trim threshold there.) **Sync now** runs `sync.sh`, the icon changes
 to 🎚… with a live step status in the menu, and a notification reports the result.
-It checks the card is mounted first. The menu also opens the `raw/` and
-`processed/` folders and the last sync log.
+It checks the card is mounted first. **Check SD card for new files** reports what's
+on the card that hasn't been synced, without copying anything: the icon becomes 🎚●
+and the sync item reads "Sync now (3 new)" until you sync. The menu also opens the
+`raw/` and `processed/` folders and the last sync log.
 
 ### Start at login / updating
 
@@ -144,6 +146,31 @@ rm -rf ~/Music/Mixer/processed
 
 `raw/` is never modified by `sync.sh`, so nothing is lost, as long as you haven't
 [cleaned](#cleaning-raw) the raw files you're rebuilding from.
+
+## Checking the card
+
+```bash
+./sync.sh --check      # report what's on the card but not synced; copies nothing
+```
+
+It takes a second or two because it compares only names, sizes and modification
+times, the same filters a real sync uses. (Checksumming the card would read every
+byte at card speed, around 15 minutes for 70 GB, and a stored checksum would still
+have to be re-computed from the card to compare, so it wouldn't be faster.) It
+reports two things:
+
+- **New**: on the card, not in `raw/`, and not cleaned from it. A sync would copy them.
+- **Changed**: same name as something already synced but a different size or date,
+  for example a reformatted card whose new recording reuses an old file name. A normal
+  sync skips existing names, so it would silently never copy these. Compare them by
+  hand before wiping the card.
+
+For raw files that have been [cleaned](#cleaning-raw), the comparison uses
+`raw/.registry.tsv` (size and modification time, recorded at cleaning time). Card
+timestamps are allowed to differ by an hour, because FAT/exFAT cards store local
+time with no UTC offset and shift when daylight saving flips.
+
+`./test-check-card.sh` is the self-test for this.
 
 ## Cleaning raw
 

@@ -16,7 +16,8 @@ Only raw files that pass every check are touched. Anything else is reported and
 kept. Default is a dry run; pass --delete (or --trash) to act.
 
 Removed files are listed in <raw>/.cleaned, which sync.sh passes to rsync so a
-card that still holds them doesn't get re-copied.
+card that still holds them doesn't get re-copied, and their size/mtime are kept in
+<raw>/.registry.tsv so `sync.sh --check` can spot a different file reusing the name.
 """
 
 import argparse
@@ -34,6 +35,7 @@ from pathlib import Path
 TR = re.compile(r"^(.+_[Tt][Rr])([0-9]+)(\.wav)$")  # same pattern as sync.sh
 ASTATS = "astats=measure_perchannel=none:measure_overall=Peak_level+RMS_level+Number_of_samples"
 MANIFEST = ".cleaned"
+REGISTRY = ".registry.tsv"
 
 
 class VerifyError(Exception):
@@ -218,12 +220,19 @@ def clean(verified, raw_dir, mode):
     removed = 0
     # Record first: if we're interrupted, a file listed but not yet removed is harmless,
     # a removed file that isn't listed would be re-copied from the card.
-    with open(manifest, "a") as mf:
+    # .cleaned is the rsync exclude list; .registry.tsv keeps each file's size and mtime
+    # (rsync -a copies the card's mtime) so `sync.sh --check` can later tell if a card
+    # file with a cleaned name is actually a different recording.
+    with open(manifest, "a") as mf, open(raw_dir / REGISTRY, "a") as rf:
         mf.write(f"# cleaned {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         for item in verified:
             for raw in item.raws:
-                mf.write(exclude_pattern(raw.relative_to(raw_dir)) + "\n")
+                rel = raw.relative_to(raw_dir)
+                st = raw.stat()
+                mf.write(exclude_pattern(rel) + "\n")
+                rf.write(f"{rel.as_posix()}\t{st.st_size}\t{int(st.st_mtime)}\n")
         mf.flush()
+        rf.flush()
     for item in verified:
         for raw in item.raws:
             if mode == "trash":

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import rumps
@@ -20,11 +21,20 @@ LOG = Path.home() / "Library" / "Logs" / "mixer-sync.log"
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STEP = re.compile(r"^Step (\d): (.*)")
+CHECK_RESULT = re.compile(r"^Result: new=(\d+) bytes=(\d+) changed=(\d+)$")
 
 # GUI apps don't inherit the shell PATH; sync.sh needs ffmpeg and rsync from brew.
 ENV = {**os.environ, "PATH": f"/opt/homebrew/bin:/usr/local/bin:{os.environ.get('PATH', '')}"}
 
-IDLE, BUSY = "🎚", "🎚…"
+IDLE, BUSY, PENDING = "🎚", "🎚…", "🎚●"  # PENDING: the card has files not yet synced
+
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 
 def notify(title, message):
@@ -39,8 +49,10 @@ class MixerSync(rumps.App):
         super().__init__("Mixer Sync", title=IDLE, quit_button="Quit")
         self.status = rumps.MenuItem("Idle")
         self.sync_item = rumps.MenuItem("Sync now", callback=self.sync_now)
+        self.check_item = rumps.MenuItem("Check SD card for new files", callback=self.check_card)
         self.menu = [
             self.sync_item,
+            self.check_item,
             self.status,
             None,
             rumps.MenuItem("Open processed folder", callback=lambda _: self.open(DEST / "processed")),
@@ -60,11 +72,67 @@ class MixerSync(rumps.App):
             notify("Mixer Sync", "SD card not found — is it plugged in?")
             self.status.title = "SD card not found"
             return
-        self.running = True
-        self.title = BUSY
-        self.sync_item.set_callback(None)  # greys out while running
+        self.set_busy(True)
         self.status.title = "Starting…"
         threading.Thread(target=self.run_sync, daemon=True).start()
+
+    def set_busy(self, busy):
+        """Grey out both actions (and show the busy icon) while a sync or check runs."""
+        self.running = busy
+        self.title = BUSY if busy else IDLE
+        self.sync_item.set_callback(None if busy else self.sync_now)
+        self.check_item.set_callback(None if busy else self.check_card)
+
+    def check_card(self, _):
+        if self.running:
+            return
+        if not SOURCE.is_dir():
+            notify("Mixer Sync", "SD card not found — is it plugged in?")
+            self.status.title = "SD card not found"
+            return
+        self.set_busy(True)
+        self.status.title = "Checking card…"
+        threading.Thread(target=self.run_check, daemon=True).start()
+
+    def run_check(self):
+        """Run `sync.sh --check` (metadata only, a few seconds) and report what's unsynced."""
+        result = None
+        try:
+            p = subprocess.run([str(SYNC), "--check"], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, env=ENV, timeout=300)
+            for line in reversed(ANSI.sub("", p.stdout).splitlines()):
+                result = CHECK_RESULT.match(line.strip())
+                if result:
+                    break
+            error = None if result else (p.stderr.strip().splitlines() or ["check failed"])[-1]
+        except Exception as exc:  # sync.sh missing, timeout, ...
+            error = str(exc)
+
+        stamp = time.strftime("%H:%M")
+        pending = False
+        if not result:
+            notify("Mixer Sync", f"Card check failed: {error}")
+            self.status.title = "Card check failed"
+        else:
+            new, nbytes, changed = (int(g) for g in result.groups())
+            pending = bool(new or changed)
+            parts = []
+            if new:
+                parts.append(f"{new} new file{'s' * (new != 1)} ({human(nbytes)}) not synced")
+            if changed:
+                parts.append("1 file differs from its synced copy" if changed == 1
+                             else f"{changed} files differ from their synced copies")
+            if parts:
+                msg = "; ".join(parts)
+                notify("Mixer Sync: card check", msg + ("" if not changed else ". See sync.sh --check."))
+                self.status.title = f"{msg} ({stamp})"[:80]
+            else:
+                notify("Mixer Sync: card check", "Everything on the card has been synced")
+                self.status.title = f"Card fully synced ✓ ({stamp})"
+            self.sync_item.title = f"Sync now ({new} new)" if new else "Sync now"
+        self.set_busy(False)
+        if pending:
+            self.title = PENDING
 
     def run_sync(self):
         LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -98,12 +166,15 @@ class MixerSync(rumps.App):
                     parts.append(line.split("|")[0].strip())
             notify("Mixer Sync finished", " · ".join(parts) or "All done")
             self.status.title = "Last sync: OK"
+            self.sync_item.title = "Sync now"  # whatever the last check found has been copied
         else:
             notify("Mixer Sync failed", tail[-1] if tail else f"exit {code}")
             self.status.title = f"Last sync failed (exit {code})"
-        self.title = IDLE
-        self.running = False
-        self.sync_item.set_callback(self.sync_now)
+        self.set_busy(False)
+        if self.sync_item.title != "Sync now":
+            # A failed sync leaves the files an earlier check found still unsynced: keep the
+            # icon in step with the "Sync now (N new)" label (success resets the label above).
+            self.title = PENDING
 
 
 if __name__ == "__main__":

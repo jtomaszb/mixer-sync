@@ -52,12 +52,17 @@ require() {
 
 # ── step 1: copy raw files, preserving folder structure ───────────────────────
 
-copy_from_sd() {
-    local source="$1"
-    local raw_dir="$2"
+# What counts as audio worth copying; shared by the copy and the card check.
+RSYNC_FILTERS=(--min-size=100k --exclude="*.sys" --exclude="*.bin" --exclude=".*")
 
-    # Prefer Homebrew rsync 3.x: it starts copying immediately (incremental file
-    # list). The system rsync (2.6.9 / openrsync) stats the whole card up front.
+# Seconds of mtime difference tolerated when comparing the card to what was synced:
+# an hour (daylight saving on the card's FAT clock) plus a second of rounding slack.
+MTIME_TOLERANCE=3601
+
+# Echo the rsync to use. Prefer Homebrew rsync 3.x: it starts copying immediately
+# (incremental file list). The system rsync (2.6.9 / openrsync) stats the whole card
+# up front.
+pick_rsync() {
     local rsync_bin
     for rsync_bin in /opt/homebrew/bin/rsync /usr/local/bin/rsync; do
         [[ -x "$rsync_bin" ]] && break
@@ -65,8 +70,16 @@ copy_from_sd() {
     done
     if [[ -z "$rsync_bin" ]]; then
         rsync_bin="$(command -v rsync)"
-        warn "Using $rsync_bin — slow file listing; 'brew install rsync' for a faster scan"
+        warn "Using $rsync_bin — slow file listing; 'brew install rsync' for a faster scan" >&2
     fi
+    echo "$rsync_bin"
+}
+
+copy_from_sd() {
+    local source="$1"
+    local raw_dir="$2"
+    local rsync_bin
+    rsync_bin="$(pick_rsync)"
 
     # Files removed from raw/ by clean_raw.py are listed in raw/.cleaned; skip them so
     # a card that still holds them doesn't get copied again. (${arr[@]+...} keeps an
@@ -76,10 +89,95 @@ copy_from_sd() {
 
     # rsync: archive mode, skip files that already exist at destination
     # -a: preserve timestamps/permissions, -v: verbose, --ignore-existing: skip existing
-    "$rsync_bin" -av --ignore-existing --min-size=100k \
-          --exclude="*.sys" --exclude="*.bin" --exclude=".*" \
+    "$rsync_bin" -av --ignore-existing "${RSYNC_FILTERS[@]}" \
           ${cleaned[@]+"${cleaned[@]}"} \
           "${source}/" "${raw_dir}/"
+}
+
+# ── check: what's on the card that hasn't been synced? ────────────────────────
+#
+# Metadata only (names, sizes, mtimes): a scan of the whole card takes seconds,
+# where checksumming it would read every byte at card speed (~15 min per 70 GB).
+#
+# Two kinds of finding:
+#   new      on the card, not in raw/ and not cleaned from it
+#   changed  same name as something already synced but a different size/mtime, e.g.
+#            a reformatted card whose new recording reuses an old file name. The
+#            copy step skips existing names, so it would silently never be copied.
+# "Changed" is checked against raw/ while the file is still there, and against
+# raw/.registry.tsv (size + mtime recorded by clean_raw.py) once it's been cleaned.
+#
+# Prints a human summary, then a machine-readable last line:
+#   Result: new=N bytes=B changed=C
+
+human_bytes() {
+    awk -v b="$1" 'BEGIN {
+        split("B KB MB GB TB", u, " "); i = 1
+        while (b >= 1024 && i < 5) { b /= 1024; i++ }
+        if (i == 1) printf "%d %s", b, u[i]; else printf "%.1f %s", b, u[i]
+    }'
+}
+
+check_card() {
+    local source="$1"
+    local raw_dir="$2"
+    local rsync_bin listing
+    rsync_bin="$(pick_rsync)"
+    mkdir -p "$raw_dir"
+
+    local cleaned=()
+    [[ -f "${raw_dir}/.cleaned" ]] && cleaned=(--exclude-from="${raw_dir}/.cleaned")
+
+    # No --ignore-existing here: a dry run then also lists names that exist in raw/ but
+    # differ. Itemize flags: ">f+++++++++" = new file; ">f.st......" = size/time differ.
+    # --modify-window: the card is FAT/exFAT, which stores local time with no UTC offset,
+    # so the same file reads exactly an hour different once daylight saving flips.
+    if ! listing=$("$rsync_bin" -an --modify-window="$MTIME_TOLERANCE" --out-format='%i|%l|%n' "${RSYNC_FILTERS[@]}" \
+                       ${cleaned[@]+"${cleaned[@]}"} "${source}/" "${raw_dir}/"); then
+        err "Could not scan the card"
+        return 1
+    fi
+
+    local new_list changed_list
+    new_list=$(printf '%s\n' "$listing" | awk -F'|' '$1 ~ /^>f\+/ { print $2 "|" $3 }')
+    changed_list=$(printf '%s\n' "$listing" \
+        | awk -F'|' '$1 ~ /^>f/ && $1 !~ /^>f\+/ && (substr($1,4,1) == "s" || substr($1,5,1) == "t") { print $3 }')
+
+    # Cleaned files are gone from raw/, so compare the card against what was recorded.
+    local registry="${raw_dir}/.registry.tsv" rel size mtime now_size now_mtime delta
+    if [[ -f "$registry" ]]; then
+        while IFS=$'\t' read -r rel size mtime; do
+            [[ -f "${source}/${rel}" ]] || continue
+            read -r now_size now_mtime < <(stat -f '%z %m' "${source}/${rel}")
+            delta=$(( now_mtime - mtime ))
+            (( delta < 0 )) && delta=$(( -delta ))
+            if [[ "$now_size" != "$size" ]] || (( delta > MTIME_TOLERANCE )); then
+                changed_list="${changed_list:+${changed_list}$'\n'}${rel}"
+            fi
+        done < "$registry"
+    fi
+
+    local new_count=0 new_bytes=0 changed_count=0
+    if [[ -n "$new_list" ]]; then
+        new_count=$(printf '%s\n' "$new_list" | wc -l | tr -d ' ')
+        new_bytes=$(printf '%s\n' "$new_list" | awk -F'|' '{ s += $1 } END { printf "%.0f", s }')
+    fi
+    [[ -n "$changed_list" ]] && changed_count=$(printf '%s\n' "$changed_list" | wc -l | tr -d ' ')
+
+    if [[ $new_count -eq 0 && $changed_count -eq 0 ]]; then
+        ok "Everything on the card has been synced"
+    fi
+    if [[ $new_count -gt 0 ]]; then
+        warn "Not yet synced: $new_count file(s), $(human_bytes "$new_bytes")"
+        printf '%s\n' "$new_list" | head -10 | awk -F'|' '{ print "    " $2 }'
+        [[ $new_count -gt 10 ]] && log "    ... and $((new_count - 10)) more"
+    fi
+    if [[ $changed_count -gt 0 ]]; then
+        warn "Same name as a synced file but different size/date: $changed_count file(s)"
+        warn "A normal sync will skip these. Compare them by hand before wiping the card."
+        printf '%s\n' "$changed_list" | head -10 | sed 's/^/    /'
+    fi
+    log "Result: new=$new_count bytes=$new_bytes changed=$changed_count"
 }
 
 # ── step 2: merge adjacent odd/even TR pairs into stereo ─────────────────────
@@ -341,6 +439,7 @@ Options:
   --source DIR   Use DIR instead of the default card path ($SOURCE)
   --dest DIR     Override destination (default: $DEST)
   --no-trim      Skip trimming trailing silence (step 3)
+  --check        Only report what's on the card that hasn't been synced; copy nothing
   -h, --help     Show this help
 EOF
     exit 0
@@ -351,10 +450,11 @@ main() {
     require ffprobe
     require rsync
 
-    local source_override=""
+    local source_override="" check_only=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --check)  check_only=1;         shift ;;
             --source) source_override="$2"; shift 2 ;;
             --dest)   DEST="$2";            shift 2 ;;
             --no-trim) TRIM=0;              shift ;;
@@ -365,6 +465,18 @@ main() {
 
     local raw_dir="${DEST}/raw"
     local proc_dir="${DEST}/processed"
+
+    if [[ "$check_only" == 1 ]]; then
+        local card="${source_override:-$SOURCE}"
+        if [[ ! -d "$card" ]]; then
+            err "Source not found: $card"
+            err "Is the SD card plugged in?"
+            exit 1
+        fi
+        check_card "$card" "$raw_dir"
+        exit 0
+    fi
+
     mkdir -p "$raw_dir" "$proc_dir"
 
     # ── 1. Copy ──────────────────────────────────────────────────────────────
