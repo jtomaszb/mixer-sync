@@ -1,0 +1,54 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+# Only one review per PR at a time; a new push cancels the in-flight review.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip drafts, and PRs from forks (secrets aren't available to them).
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # To use a Claude subscription instead of an API key:
+          # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. This repo is a set of shell and Python
+            scripts that process audio files (ffmpeg, SD card sync, a macOS
+            menubar item), so focus on:
+
+            1. Correctness bugs: wrong logic, unhandled errors, bad exit codes,
+               edge cases (missing files, unmounted volumes, empty input).
+            2. Shell safety: unquoted variables, word splitting, destructive
+               commands (rm, mv) that could delete or overwrite the wrong files.
+            3. Data safety: anything that could lose or corrupt audio originals.
+            4. Security: command injection, unsafe temp files, hardcoded secrets.
+
+            Skip style nitpicks. Use inline comments for specific issues and one
+            short top-level summary comment. If the PR looks good, say so briefly.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
